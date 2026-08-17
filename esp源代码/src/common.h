@@ -19,17 +19,11 @@ typedef struct{
     uint16_t uiLength;
 }STREAM_TLV_S;
 
-static inline void setStreamTLV(STREAM_TLV_S &tlv, uint16_t type, uint16_t len){
-    tlv.uiPrefix = STREAM_PREFIX;
-    tlv.uiType = type;
-    tlv.uiLength = len;
+static inline void setStreamTLV(STREAM_TLV_S *tlv, uint16_t type, uint16_t len){
+    tlv->uiPrefix = STREAM_PREFIX;
+    tlv->uiType = type;
+    tlv->uiLength = len;
 }
 
-enum{
-    TRANSMIT_MODE_WIRELESS_E,
-    TRANSMIT_MODE_WIRE_E,
-    TRANSMIT_MODE_MAX_E,
-};
-extern uint8_t g_transmitMode;
 #define VERSION_STR "DIY_1_4_0"
 #endif

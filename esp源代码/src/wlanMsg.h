@@ -3,30 +3,27 @@
 #include <AsyncUDP.h>
 #include "common.h"
 enum{
-    MSG_SERVER_HEARTBEAT_E,
-    MSG_IMAGE_E,
-    MSG_REQ_CERTIFICATION_E,
-    MSG_REPLY_CERTIFICATION_E,
-    MSG_SERVER_UNICAST_HEARTBEAT_E,
-    MSG_IMAGE_V2_E,
-    MSG_REQ_FTV2_PARA_E,
-    MSG_SET_FTV2_PARA_E,
-    MSG_FTV2_PARA_E,
-    MSG_MAX_E,
+    MSG_SERVER_HEARTBEAT_E = 0,
+    MSG_SERVER_UNICAST_HEARTBEAT_E = 4,
+    MSG_IMAGE_V2_E = 5,
+    MSG_VERSION_E = 6,
+    MSG_MAX_E = 9,
 };
 
-/* 标定参数结构体，发送给tracker */
-typedef TLV_S MSG_WLAN_HEARTBEAT_S;
+#define VERSION_MARKER_START 0xAA55AA55
+#define VERSION_MARKER_END   0x55AA55AA
+#define DEFAULT_HARDWARE_VER 1
+#define DEFAULT_FIRMWARE_VER 906
+
 typedef struct {
-    TLV_S tlv;
-    uint32_t uiOffset;
-    uint32_t uiTotalLen;
-    uint8_t ucFlags;
-    uint8_t ucFrameIndex;
-    uint8_t ucBattery;
-    uint8_t ucReserved;
-    uint8_t aucData[0];
-}MSG_WLAN_IMAGE_S;
+    // 总长度固定 28 字节 (payload 24 字节)
+    TLV_S tlv;               // uiType = MSG_VERSION_E (6), uiLength = 24
+    uint32_t uiMarkerStart;  // 0xAA55AA55
+    uint32_t uiHardwareVer;  // hardware version (e.g. 1)
+    uint32_t uiFirmwareVer;  // firmware version (e.g. 906)
+    uint8_t aucReserved[8];  // 8 bytes reserved (0)
+    uint32_t uiMarkerEnd;    // 0x55AA55AA
+} MSG_WLAN_VERSION_S;
 
 typedef struct {
     // tlv头部，uiType为MSG_IMAGE_V2_E，uiLength总长度(包含该头部)
@@ -49,20 +46,11 @@ typedef struct {
 // 无需手动分片（uiOffset == 0, uiTotalLen == uiDataLen）就可以直接发送
 // ESP由于强制使用TCP MTU为1460，所以需要手动分片
 
-
-typedef struct{
-    TLV_S tlv;
-    char SSID[SSID_LENGTH];
-    char password[WIFI_PASSWORD_LENGTH];
-}MSG_WLAN_WIFI_CONFIG_S;
-
 class wlanMsgClass{
 private:
-    char acSSID[SSID_LENGTH];
-    char acPassword[WIFI_PASSWORD_LENGTH];
-    uint32_t uiTxBufferSize = 0;
+    char acSSID[SSID_LENGTH + 1];
+    char acPassword[WIFI_PASSWORD_LENGTH + 1];
     AsyncUDP udpClient;
-    bool isConnected = false;
     
 public:
     uint8_t tryConCount = 0;
@@ -71,6 +59,8 @@ public:
     void connect();
     void send(uint8_t *data, size_t len, IPAddress ip, uint16_t port);
     void send(uint8_t *data, size_t len);
+    void sendVersionFrame(IPAddress ip, uint16_t port);
+    void sendVersionFrame();
     int runFrame(unsigned long currentT);
     void APMode();
 };

@@ -1,7 +1,6 @@
 #ifndef _CAM_PINS_DEF_H_
 #define _CAM_PINS_DEF_H_
 #include <esp_camera.h>
-#include "config.h"
 /** @brief Pin definition for AI Thinker ESP32-CAM. */
 constexpr camera_config_t camconfig{
   .pin_pwdn = 32,

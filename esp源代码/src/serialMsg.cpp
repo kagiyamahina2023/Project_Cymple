@@ -4,10 +4,8 @@
 #include "drv/eeprom.h"
 #include "esp32cam.h"
 
-#define SERIAL_TIMEOUT 200
 serialClass *pserialObj = NULL;
 #define LOG_BUFF_SIZE 256
-static uint8_t acSerialLogbuffer[LOG_BUFF_SIZE];
 
 // 日志消息
 typedef struct {
@@ -20,14 +18,21 @@ typedef struct {
 
 
 void serial_writelog(const char *format, ...) {
+    alignas(SERIAL_MSG_LOG_S) uint8_t acSerialLogbuffer[LOG_BUFF_SIZE];
     SERIAL_MSG_LOG_S *pTmp = (SERIAL_MSG_LOG_S *)acSerialLogbuffer;
     pTmp->logLevel = 0;
     pTmp->ucDeviceFlag = 0;
     va_list args;
     va_start(args, format);
-    int16_t logSize = vsnprintf(pTmp->data, LOG_BUFF_SIZE - sizeof(SERIAL_MSG_LOG_S), format, args);
+    int logSize = vsnprintf(pTmp->data, LOG_BUFF_SIZE - sizeof(SERIAL_MSG_LOG_S), format, args);
     va_end(args);
-    set_stream_tlv(&pTmp->tlv, SERIAL_MSG_LOG_E, logSize + sizeof(SERIAL_MSG_LOG_S) - sizeof(STREAM_TLV_S));
+    if (logSize < 0) {
+        return;
+    }
+    if (logSize > (int)(LOG_BUFF_SIZE - sizeof(SERIAL_MSG_LOG_S) - 1)) {
+        logSize = LOG_BUFF_SIZE - sizeof(SERIAL_MSG_LOG_S) - 1;
+    }
+    setStreamTLV(&pTmp->tlv, SERIAL_MSG_LOG_E, logSize + sizeof(SERIAL_MSG_LOG_S) - sizeof(STREAM_TLV_S));
     pTmp->logLength = logSize;
     Serial.write(acSerialLogbuffer, logSize + sizeof(SERIAL_MSG_LOG_S));
 }
@@ -80,7 +85,11 @@ void serialClass::serialMsgCallback(uint16_t type, uint16_t len){
                 serial_writelog("Sizeof SERIAL_MSG_WIFICONFIG_S dismatch: rcv: %u, local %u\r\n", len, sizeof(SERIAL_MSG_WIFICONFIG_S));
             }else{
                 SERIAL_MSG_WIFICONFIG_S *tmp = (SERIAL_MSG_WIFICONFIG_S *)(acSerialRxBuffer + usSerialRxDataOffset);
-                pwlanMsgObj->connect(tmp->acSSID, tmp->acPassword);
+                char acSSID[SSID_LENGTH + 1] = {0};
+                char acPassword[WIFI_PASSWORD_LENGTH + 1] = {0};
+                memcpy(acSSID, tmp->acSSID, SSID_LENGTH);
+                memcpy(acPassword, tmp->acPassword, WIFI_PASSWORD_LENGTH);
+                pwlanMsgObj->connect(acSSID, acPassword);
             }
             break;
         case SERIAL_MSG_POSITION_CFG_E:
@@ -109,6 +118,14 @@ void serialClass::runFrame(unsigned long currentT){
     }
     timer = currentT;
     
+    /* 如果之前有偏移量，先将有效数据移到缓冲区开头 */
+    if (usSerialRxDataOffset > 0) {
+        if (usSerialRxDataLen > 0) {
+            memmove(acSerialRxBuffer, acSerialRxBuffer + usSerialRxDataOffset, usSerialRxDataLen);
+        }
+        usSerialRxDataOffset = 0;
+    }
+
     /* 读取可用数据到缓冲区 */
     int availableBytes = Serial.available();
     int readBytes = Serial.readBytes(acSerialRxBuffer + usSerialRxDataLen, 
@@ -135,15 +152,8 @@ void serialClass::runFrame(unsigned long currentT){
             STREAM_TLV_S *pTmp = (STREAM_TLV_S *)(acSerialRxBuffer + usSerialRxDataOffset);
             int len = pTmp->uiLength + sizeof(STREAM_TLV_S);
             
-            /* 长度异常 */
-            if(len > SERIAL_RX_BUFF_SIZE){
-                bRcvSerialHdr = false;
-                usSerialRxDataOffset += sizeof(uint32_t); // 只跳过前缀字段
-                usSerialRxDataLen -= sizeof(uint32_t);
-                continue;
-            }
             /* 数据不完整，等待更多数据 */
-            else if(usSerialRxDataLen < len){
+            if(usSerialRxDataLen < len){
                 break;
             }
             /* 正常解析 */

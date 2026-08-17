@@ -21,10 +21,8 @@ private:
   #define TX_BUFF_SIZE 40960
   uint8_t aucTxBuffer[TX_BUFF_SIZE];
   bool bValid = false;
-  bool bParaInit = false;
   uint8_t ucFrameIndex = 0;
-  void sendByUsb(SERIAL_MSG_WLAN_PACKET_S *pstImgMsg, size_t imgLen, uint8_t ucDeviceFlag);
-  void sendByWireless(MSG_WLAN_IMAGE_V2_S *pstImgMsg, size_t imgLen, uint8_t ucDeviceFlag);
+  void sendByWireless(size_t imgLen, uint8_t ucDeviceFlag);
 };
 extern cameraClass *pCamera;
 #endif

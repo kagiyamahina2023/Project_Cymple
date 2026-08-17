@@ -2,12 +2,10 @@
 #define EEPROM_HPP
 #include <EEPROM.h>
 #include "../common.h"
-#define FLAG2_FAST_MODE 0x01
 typedef struct{
     char acSSID[SSID_LENGTH];
     char acPassword[WIFI_PASSWORD_LENGTH];
     uint8_t ucFlags;
-    uint8_t transmitMode;
 }EEPROM_DATA_S;
 namespace eepromApi{
     static void read(void *pData, uint32_t uiOffset, uint32_t length){

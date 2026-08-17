@@ -8,14 +8,13 @@
 #include "wifiUser.h"
 #include "serialMsg.h"
 
-#define WIFI_MAX_TX_POWER 80
 wlanMsgClass *pwlanMsgObj = NULL;
 IPAddress remoteAddr;
 bool bHeartbeatTimeout = true;
 unsigned long heartBeatTimer = 0;
 #define AP_NAME "Cymple_Face"
 static void onPacketCallBack(AsyncUDPPacket packet){
-    if(!packet.available()){
+    if(!packet.available() || packet.length() < sizeof(TLV_S)){
         return;
     }
     TLV_S *pstMsgHdr = (TLV_S *)packet.data();
@@ -23,12 +22,13 @@ static void onPacketCallBack(AsyncUDPPacket packet){
     switch(pstMsgHdr->uiType){
         case MSG_SERVER_HEARTBEAT_E:
         case MSG_SERVER_UNICAST_HEARTBEAT_E:
+            if (bHeartbeatTimeout && pwlanMsgObj) {
+                pwlanMsgObj->sendVersionFrame(packet.remoteIP(), CYMPLEFACE_SERVER_PORT);
+            }
             heartBeatTimer = millis();
             bHeartbeatTimeout = false;
             remoteAddr = packet.remoteIP();
             break;
-        case MSG_REQ_CERTIFICATION_E:
-            break;    
         default:
             serial_writelog("Invalid msg type%u, msg len:%d\n", pstMsgHdr->uiType, msgLen);
             break;
@@ -38,50 +38,91 @@ static void onPacketCallBack(AsyncUDPPacket packet){
 wlanMsgClass::wlanMsgClass(){
     memset(acSSID, 0 , sizeof(acSSID));
     memset(acPassword, 0 , sizeof(acPassword));
-    eepromApi::read(acSSID, OFFSET(EEPROM_DATA_S, acSSID), sizeof(acSSID));
-    eepromApi::read(acPassword, OFFSET(EEPROM_DATA_S, acPassword), sizeof(acPassword));
-    acSSID[SSID_LENGTH - 1] = '\0';
-    acPassword[WIFI_PASSWORD_LENGTH - 1] = '\0';
+    eepromApi::read(acSSID, OFFSET(EEPROM_DATA_S, acSSID), SSID_LENGTH);
+    eepromApi::read(acPassword, OFFSET(EEPROM_DATA_S, acPassword), WIFI_PASSWORD_LENGTH);
+    acSSID[SSID_LENGTH] = '\0';
+    acPassword[WIFI_PASSWORD_LENGTH] = '\0';
+    // 过滤未初始化的 EEPROM 区域 (0xFF)
+    if((uint8_t)acSSID[0] == 0xFF){
+        acSSID[0] = '\0';
+    }
+    if((uint8_t)acPassword[0] == 0xFF){
+        acPassword[0] = '\0';
+    }
     remoteAddr = INADDR_NONE;
     WiFi.mode(WIFI_STA);
     WiFi.persistent(false);
-    // if(ESP_OK != esp_wifi_set_max_tx_power(WIFI_MAX_TX_POWER)){
-    //     serial_writelog("Failed to config wifi max tx power.");
-    // }
+
+    int listenRetry = 0;
     while (!udpClient.listen(CYMPLEFACE_CAM_PORT)) //等待udp监听设置成功
     {
+        delay(20);
+        if(++listenRetry > 50){
+            serial_writelog("UDP listen timeout\r\n");
+            break;
+        }
     }
     udpClient.onPacket(onPacketCallBack);
     if(acSSID[0] != 0){
         connect(acSSID, acPassword);
+    }else{
+        // 没有保存过凭据时直接进入配网模式，不进行无效的阻塞连接。
+        tryConCount = 3;
     }
 }
 
 void wlanMsgClass::connect(const char *SSID, const char *password){
-    bool ret = false;
-    if(0 == SSID[0]){
+    if(NULL == SSID){
         serial_writelog("SSID missing\r\n");
+        return;
     }
-    if(0 != strcmp(SSID, acSSID)){
-        ret = true;
-        strncpy(acSSID, SSID, SSID_LENGTH);
-        eepromApi::write((void *)SSID, OFFSET(EEPROM_DATA_S, acSSID), SSID_LENGTH);
+    if(NULL == password){
+        password = "";
     }
-    if(0 != strcmp(password, acPassword)){
-        ret = true;
-        strncpy(acPassword, password, WIFI_PASSWORD_LENGTH);
-        eepromApi::write((void *)password, OFFSET(EEPROM_DATA_S, acPassword), WIFI_PASSWORD_LENGTH);
+
+    size_t ssidLength = strnlen(SSID, SSID_LENGTH + 1);
+    size_t passwordLength = strnlen(password, WIFI_PASSWORD_LENGTH + 1);
+    if(0 == ssidLength){
+        serial_writelog("SSID missing\r\n");
+        return;
     }
-    if((ret || !WiFi.isConnected()) && (0 != acSSID[0])){
+    if(ssidLength > SSID_LENGTH || passwordLength > WIFI_PASSWORD_LENGTH){
+        serial_writelog("WiFi credentials are too long\r\n");
+        return;
+    }
+
+    bool credentialsChanged = false;
+    if((ssidLength != strlen(acSSID)) || (0 != memcmp(SSID, acSSID, ssidLength))){
+        credentialsChanged = true;
+        memset(acSSID, 0, sizeof(acSSID));
+        memcpy(acSSID, SSID, ssidLength);
+        eepromApi::write((void *)acSSID, OFFSET(EEPROM_DATA_S, acSSID), SSID_LENGTH);
+    }
+    if((passwordLength != strlen(acPassword)) || (0 != memcmp(password, acPassword, passwordLength))){
+        credentialsChanged = true;
+        memset(acPassword, 0, sizeof(acPassword));
+        memcpy(acPassword, password, passwordLength);
+        eepromApi::write((void *)acPassword, OFFSET(EEPROM_DATA_S, acPassword), WIFI_PASSWORD_LENGTH);
+    }
+    if(credentialsChanged || !WiFi.isConnected()){
         serial_writelog("Connecting to %s\n", acSSID);
-        networkApi::connect(acSSID, acPassword);
+        if(networkApi::connect(acSSID, acPassword)){
+            tryConCount = 0;
+        }
     }
 }
 
 
 void wlanMsgClass::connect(){
+    if(0 == acSSID[0]){
+        serial_writelog("SSID missing\r\n");
+        tryConCount = 3;
+        return;
+    }
     serial_writelog("Connecting to %s\n", acSSID);
-    networkApi::connect(acSSID, acPassword);
+    if(networkApi::connect(acSSID, acPassword)){
+        tryConCount = 0;
+    }
 }
 
 void wlanMsgClass::APMode(){
@@ -107,6 +148,24 @@ void wlanMsgClass::send(uint8_t *data, size_t len){
     
 }
 
+void wlanMsgClass::sendVersionFrame(IPAddress ip, uint16_t port){
+    MSG_WLAN_VERSION_S versionMsg;
+    versionMsg.tlv.uiType = MSG_VERSION_E;
+    versionMsg.tlv.uiLength = sizeof(MSG_WLAN_VERSION_S) - sizeof(TLV_S);
+    versionMsg.uiMarkerStart = VERSION_MARKER_START;
+    versionMsg.uiHardwareVer = DEFAULT_HARDWARE_VER;
+    versionMsg.uiFirmwareVer = DEFAULT_FIRMWARE_VER;
+    memset(versionMsg.aucReserved, 0, sizeof(versionMsg.aucReserved));
+    versionMsg.uiMarkerEnd = VERSION_MARKER_END;
+    send((uint8_t *)&versionMsg, sizeof(MSG_WLAN_VERSION_S), ip, port);
+}
+
+void wlanMsgClass::sendVersionFrame(){
+    if(INADDR_NONE != remoteAddr){
+        sendVersionFrame(remoteAddr, CYMPLEFACE_SERVER_PORT);
+    }
+}
+
 int wlanMsgClass::runFrame(unsigned long currentT){
     if(tryConCount > 2){
         if(3 == tryConCount){
@@ -118,9 +177,10 @@ int wlanMsgClass::runFrame(unsigned long currentT){
         delay(30);
         return 1;
     }
-    long long deltaT = (long long)currentT - heartBeatTimer;
-    deltaT = abs(deltaT);
-    if((!bHeartbeatTimeout) && (deltaT > WLAN_HEARTBEAT_TIMEOUT)){
+    if(WiFi.isConnected()){
+        tryConCount = 0;
+    }
+    if((!bHeartbeatTimeout) && ((currentT - heartBeatTimer) > WLAN_HEARTBEAT_TIMEOUT)){
         bHeartbeatTimeout = true;
     }
     if(bHeartbeatTimeout){
@@ -138,4 +198,3 @@ int wlanMsgClass::runFrame(unsigned long currentT){
     }
     return 0;
 }
-
